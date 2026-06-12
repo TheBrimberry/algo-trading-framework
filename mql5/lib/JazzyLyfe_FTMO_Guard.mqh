@@ -11,6 +11,11 @@
 //| Hard limits  -> flatten everything, halt the EA for the session  |
 //|   Daily hard : 5.0%   |  Total hard : 10.0%                      |
 //|                                                                  |
+//| Also guards:                                                     |
+//|   * Max trades/day  -> blocks new entries once hit               |
+//|   * Friday close   -> flattens all positions at FridayCloseHour  |
+//|   * Weekend block  -> no new entries Saturday / Sunday           |
+//|                                                                  |
 //| Tracks the broker server day-roll so the daily anchor resets at  |
 //| the prop firm's daily reset. Anchors on the HIGHER of            |
 //| balance/equity at day open (FTMO uses balance-or-equity start).  |
@@ -26,11 +31,13 @@
 //--- Guard verdicts returned to the EA each tick
 enum ENUM_JL_GUARD_STATE
   {
-   JL_GUARD_OK        = 0,   // trading permitted normally
-   JL_GUARD_SOFT_DAY  = 1,   // daily soft hit  -> no new trades today
-   JL_GUARD_SOFT_MAX  = 2,   // total soft hit  -> no new trades
-   JL_GUARD_HARD_DAY  = 3,   // daily hard hit  -> flattened + halted
-   JL_GUARD_HARD_MAX  = 4    // total hard hit  -> flattened + halted
+   JL_GUARD_OK            = 0,   // trading permitted normally
+   JL_GUARD_SOFT_DAY      = 1,   // daily soft hit        -> no new trades today
+   JL_GUARD_SOFT_MAX      = 2,   // total soft hit        -> no new trades
+   JL_GUARD_HARD_DAY      = 3,   // daily hard hit        -> flattened + halted
+   JL_GUARD_HARD_MAX      = 4,   // total hard hit        -> flattened + halted
+   JL_GUARD_MAX_TRADES    = 5,   // daily trade cap hit   -> no new trades today
+   JL_GUARD_WEEKEND       = 6    // weekend / Friday close -> no new trades
   };
 
 //+------------------------------------------------------------------+
@@ -39,20 +46,25 @@ enum ENUM_JL_GUARD_STATE
 class CJazzyLyfeFTMOGuard
   {
 private:
-   //--- configuration (percent of starting balance)
+   //--- configuration
    double            m_daily_soft_pct;
    double            m_daily_hard_pct;
    double            m_total_soft_pct;
    double            m_total_hard_pct;
+   int               m_max_trades_day;    // 0 = unlimited
+   int               m_friday_close_hour; // server hour to flatten on Friday (e.g. 20)
+   bool              m_use_weekend_block;
 
    //--- anchors
-   double            m_account_start_balance; // balance the challenge began with
-   double            m_day_anchor_equity;     // equity/balance at day open
-   datetime          m_current_day;           // server day currently anchored
-   bool              m_halted;                // hard breach latch (session)
-   ENUM_JL_GUARD_STATE m_halt_reason;         // which hard limit triggered the halt
-   long              m_magic;                 // owning EA magic (for flatten)
-   string            m_tag;                   // log prefix
+   double            m_account_start_balance;
+   double            m_day_anchor_equity;
+   datetime          m_current_day;
+   bool              m_halted;
+   bool              m_friday_flattened;  // so we only flatten once per Friday
+   ENUM_JL_GUARD_STATE m_halt_reason;
+   int               m_daily_trade_count;
+   long              m_magic;
+   string            m_tag;
 
    datetime          ServerDayStart()
      {
@@ -67,12 +79,13 @@ private:
       datetime today = ServerDayStart();
       if(today != m_current_day)
         {
-         m_current_day      = today;
-         // FTMO daily reference = higher of balance or equity at reset
+         m_current_day        = today;
+         m_daily_trade_count  = 0;
+         m_friday_flattened   = false;
          double bal = AccountInfoDouble(ACCOUNT_BALANCE);
          double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
-         m_day_anchor_equity = MathMax(bal, eq);
-         PrintFormat("%s daily anchor reset -> %.2f", m_tag, m_day_anchor_equity);
+         m_day_anchor_equity  = MathMax(bal, eq);
+         PrintFormat("%s daily anchor reset -> %.2f  trades reset", m_tag, m_day_anchor_equity);
         }
      }
 
@@ -89,35 +102,68 @@ private:
         }
      }
 
+   bool              IsFridayCloseTime()
+     {
+      MqlDateTime dt;
+      TimeToStruct(TimeCurrent(), dt);
+      return(dt.day_of_week == 5 && dt.hour >= m_friday_close_hour);
+     }
+
+   bool              IsWeekend()
+     {
+      MqlDateTime dt;
+      TimeToStruct(TimeCurrent(), dt);
+      return(dt.day_of_week == 0 || dt.day_of_week == 6);
+     }
+
 public:
                      CJazzyLyfeFTMOGuard(void) :
                      m_daily_soft_pct(4.5), m_daily_hard_pct(5.0),
                      m_total_soft_pct(9.0), m_total_hard_pct(10.0),
+                     m_max_trades_day(0), m_friday_close_hour(20),
+                     m_use_weekend_block(true),
                      m_account_start_balance(0), m_day_anchor_equity(0),
-                     m_current_day(0), m_halted(false),
-                     m_halt_reason(JL_GUARD_OK), m_magic(0),
-                     m_tag("[JL-FTMO]") {}
+                     m_current_day(0), m_halted(false), m_friday_flattened(false),
+                     m_halt_reason(JL_GUARD_OK), m_daily_trade_count(0),
+                     m_magic(0), m_tag("[JL-FTMO]") {}
 
    //--- call once in OnInit
    void              Init(long magic,
-                          double start_balance = 0.0,
-                          double daily_soft = 4.5, double daily_hard = 5.0,
-                          double total_soft = 9.0, double total_hard = 10.0)
+                          double start_balance  = 0.0,
+                          double daily_soft     = 4.5,  double daily_hard    = 5.0,
+                          double total_soft     = 9.0,  double total_hard    = 10.0,
+                          int    max_trades_day = 6,
+                          int    friday_close_hour = 20,
+                          bool   weekend_block  = true)
      {
-      m_magic = magic;
+      m_magic               = magic;
       m_account_start_balance = (start_balance > 0.0)
                                 ? start_balance
                                 : AccountInfoDouble(ACCOUNT_BALANCE);
-      m_daily_soft_pct = daily_soft;  m_daily_hard_pct = daily_hard;
-      m_total_soft_pct = total_soft;  m_total_hard_pct = total_hard;
-      m_halted = false;
-      m_halt_reason = JL_GUARD_OK;
-      m_current_day = 0;
+      m_daily_soft_pct      = daily_soft;  m_daily_hard_pct     = daily_hard;
+      m_total_soft_pct      = total_soft;  m_total_hard_pct     = total_hard;
+      m_max_trades_day      = max_trades_day;
+      m_friday_close_hour   = friday_close_hour;
+      m_use_weekend_block   = weekend_block;
+      m_halted              = false;
+      m_halt_reason         = JL_GUARD_OK;
+      m_daily_trade_count   = 0;
+      m_friday_flattened    = false;
+      m_current_day         = 0;
       RollDayIfNeeded();
-      PrintFormat("%s armed. start=%.2f daily %.1f/%.1f%% total %.1f/%.1f%%",
+      PrintFormat("%s armed. start=%.2f daily %.1f/%.1f%% total %.1f/%.1f%% maxTrades=%d fridayClose=%dh",
                   m_tag, m_account_start_balance,
                   m_daily_soft_pct, m_daily_hard_pct,
-                  m_total_soft_pct, m_total_hard_pct);
+                  m_total_soft_pct, m_total_hard_pct,
+                  m_max_trades_day, m_friday_close_hour);
+     }
+
+   //--- call this after every successfully opened trade
+   void              RecordTrade()
+     {
+      m_daily_trade_count++;
+      PrintFormat("%s trade recorded -> daily count=%d / %d",
+                  m_tag, m_daily_trade_count, m_max_trades_day);
      }
 
    //--- current drawdowns in percent (positive = loss)
@@ -140,13 +186,26 @@ public:
      {
       RollDayIfNeeded();
 
+      //--- Friday close: flatten once, then block all weekend
+      if(m_use_weekend_block)
+        {
+         if(IsFridayCloseTime() && !m_friday_flattened)
+           {
+            FlattenAll();
+            m_friday_flattened = true;
+            PrintFormat("%s FRIDAY CLOSE %dh -> flattened all positions", m_tag, m_friday_close_hour);
+           }
+         if(IsFridayCloseTime() || IsWeekend())
+            return(JL_GUARD_WEEKEND);
+        }
+
       if(m_halted)
-         return(m_halt_reason); // return the exact reason that triggered the halt
+         return(m_halt_reason);
 
       double dd_day = DailyDDPercent();
       double dd_max = TotalDDPercent();
 
-      //--- HARD breaches: flatten + latch (total checked first - higher priority)
+      //--- HARD breaches: flatten + latch (total checked first)
       if(dd_max >= m_total_hard_pct)
         {
          FlattenAll(); m_halted = true; m_halt_reason = JL_GUARD_HARD_MAX;
@@ -162,7 +221,7 @@ public:
          return(JL_GUARD_HARD_DAY);
         }
 
-      //--- SOFT breaches: block new entries, keep managing open trades
+      //--- SOFT breaches: block new entries
       if(dd_max >= m_total_soft_pct)
         {
          PrintFormat("%s SOFT MAX %.2f%% -> no new trades", m_tag, dd_max);
@@ -174,17 +233,26 @@ public:
          return(JL_GUARD_SOFT_DAY);
         }
 
+      //--- Daily trade cap
+      if(m_max_trades_day > 0 && m_daily_trade_count >= m_max_trades_day)
+        {
+         PrintFormat("%s MAX TRADES %d/%d -> no new trades today",
+                     m_tag, m_daily_trade_count, m_max_trades_day);
+         return(JL_GUARD_MAX_TRADES);
+        }
+
       return(JL_GUARD_OK);
      }
 
-   //--- convenience gates for the EA
-   bool              CanOpenNew()      { ENUM_JL_GUARD_STATE s = Check(); return(s == JL_GUARD_OK); }
-   bool              IsHalted()        { return(m_halted); }
-   void              ResetSession()    { m_halted = false; m_halt_reason = JL_GUARD_OK; }
+   //--- convenience gates
+   bool              CanOpenNew()   { return(Check() == JL_GUARD_OK); }
+   bool              IsHalted()     { return(m_halted); }
+   int               DailyTrades()  { return(m_daily_trade_count); }
+   void              ResetSession() { m_halted = false; m_halt_reason = JL_GUARD_OK; }
 
    //--- dashboard helpers
-   double            DailyRoomPct()    { return(m_daily_hard_pct - DailyDDPercent()); }
-   double            TotalRoomPct()    { return(m_total_hard_pct - TotalDDPercent()); }
+   double            DailyRoomPct() { return(m_daily_hard_pct - DailyDDPercent()); }
+   double            TotalRoomPct() { return(m_total_hard_pct - TotalDDPercent()); }
   };
 
 #endif // __JAZZYLYFE_FTMO_GUARD_MQH__

@@ -6,7 +6,7 @@
 //|  Version : 1.0.0  —  Upcomers Oracle Edition                    |
 //|  Grade   : A++                                                   |
 //|                                                                  |
-//|  ═══════════════════════════════════════════════════════     |
+//|  ═══════════════════════════════════════════════════════════     |
 //|  THE SWIFT STRATEGY                                              |
 //|  Rebuilt from the Momentum Engine (77% WR, PF 2.94).           |
 //|  The original edge came from fast EMA crossovers (5/13/34)       |
@@ -25,7 +25,7 @@
 //|    8. Zero hedging (never opens opposing on same symbol)         |
 //|                                                                  |
 //|  NET EFFECT: avg hold ~45-90 min, fully compliant, same edge.   |
-//|  ═══════════════════════════════════════════════════════     |
+//|  ═══════════════════════════════════════════════════════════     |
 //|  UPCOMERS ORACLE COMPLIANCE (hard-coded and verified):           |
 //|    Daily DD      : 4% trailing from intraday equity peak         |
 //|    DRS Shield    : 5% below equity HWM (never resets down)       |
@@ -36,7 +36,7 @@
 //|    No martingale : anti-martingale only (size DOWN on losses)    |
 //|    No grid       : single entry per signal, min bars enforced    |
 //|    JLUPC_ GVs    : shared with SmartGuard + all fleet EAs        |
-//|  ═══════════════════════════════════════════════════════     |
+//|  ═══════════════════════════════════════════════════════════     |
 //|  SIZING — conservative micro-lot:                               |
 //|    Base: 0.02 lots | Max: 0.05 lots                              |
 //|    T0 (0-1% DD) : 0.02  |  T1 (1-2% DD) : 0.01                 |
@@ -792,7 +792,7 @@ void Dashboard()
         " | Session: " + (SessionOpen() ? "OPEN" : "CLOSED") + "\n";
    s += "╠══ STATUS ════════════════════════════════════════╣\n";
    s += "║ Lock: " + lock + " | Positions: " + (string)PositionsTotal() + "\n";
-   s += "╠══ COMPLIANCE (Oracle) ═════════════════════════════╣\n";
+   s += "╠══ COMPLIANCE (Oracle) ═══════════════════════════╣\n";
    s += "║ No scalping ✓ | No hedge ✓ | No grid ✓ | No martingale ✓\n";
    s += "║ Anti one-sided ✓ | Min hold " + (string)InpMinHoldSec + "s ✓\n";
    s += "╚══ JAZZYLYFE | TheBrimberry | Brimberry LLC ═══════╝";
